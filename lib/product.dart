@@ -6,7 +6,9 @@ import 'dart:developer' as developer;
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:path_provider/path_provider.dart';
+import 'package:quick_mart_admin/color.dart';
 import 'package:quick_mart_admin/viewproduct.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class Product extends StatefulWidget {
   final String? productId;
@@ -17,25 +19,85 @@ class Product extends StatefulWidget {
 }
 
 class _ProductState extends State<Product> {
-    bool _isLoading = false; 
-    double _uploadProgress = 0.0; 
+  bool _isLoading = false;
+  double _uploadProgress = 0.0;
   File? _mainImage;
   final List<File?> _additionalImages = [];
   final _descriptionController = TextEditingController();
   final _productNameController = TextEditingController();
   final _priceController = TextEditingController();
-  String? _weightType; // Variable to store the selected weight type
-  String? _category; // Variable to store the selected category
-  final _formKey = GlobalKey<FormState>(); // To validate form fields
+  String? _weightType;
+  String? _category;
+  final _formKey = GlobalKey<FormState>();
 
-  List<String> categories = []; // Categories from Firebase
+  String? _offerType;
+  final TextEditingController _newOfferTypeController = TextEditingController();
+  List<String> _offerTypes = [];
+
+  List<String> categories = [];
 
   @override
   void initState() {
     super.initState();
     _getCategories();
+    _loadOfferTypesFromPrefs(); // Load saved offer types and set initial selection
     if (widget.productId != null) {
       _fetchProductData(widget.productId!); // Fetch data if editing
+    }
+  }
+
+  Future<void> _loadOfferTypesFromPrefs() async {
+    final prefs = await SharedPreferences.getInstance();
+    List<String>? savedOfferTypes = prefs.getStringList('offerTypes');
+    setState(() {
+      if (savedOfferTypes != null && savedOfferTypes.isNotEmpty) {
+        _offerTypes = savedOfferTypes;
+      } else {
+        // If no offer types are saved yet, initialize with default ones
+        _offerTypes = ["Normal", "Top Product"];
+      }
+
+      // --- NEW LOGIC HERE ---
+      // Ensure "Normal" is always present in the list, adding it if missing
+      if (!_offerTypes.contains("Normal")) {
+        _offerTypes.insert(0, "Normal"); 
+      }
+      // Ensure "Top Product" is also present if we consider it a fixed default
+      if (!_offerTypes.contains("Top Product")) {
+        _offerTypes.add("Top Product");
+      }
+
+
+      _offerType = "Normal";
+      // --- END NEW LOGIC ---
+    });
+  }
+
+  Future<void> _saveOfferTypesToPrefs() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList('offerTypes', _offerTypes);
+    developer.log('Offer Types saved: $_offerTypes', name: 'SharedPreferences');
+  }
+
+  void _addOfferTypeAndSave() {
+    final String value = _newOfferTypeController.text.trim();
+    if (value.isNotEmpty) {
+      if (!_offerTypes.contains(value)) {
+        setState(() {
+          _offerTypes.add(value);
+          _newOfferTypeController.clear();
+          _offerType = value; // Select the newly added type
+        });
+        _saveOfferTypesToPrefs();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Offer Type "$value" added and saved.')),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Offer Type "$value" already exists.')),
+        );
+        _newOfferTypeController.clear();
+      }
     }
   }
 
@@ -47,12 +109,12 @@ class _ProductState extends State<Product> {
           .get();
       if (doc.exists) {
         setState(() {
+          _offerType = doc['offerType']; // This will override the default "Normal" if editing
           _productNameController.text = doc['productname'];
           _priceController.text = doc['price'];
           _descriptionController.text = doc['description'];
           _category = doc['category'];
           _weightType = doc['type'];
-          // Load Images if exist
           if (doc['image'] != null && doc['image'].toString().isNotEmpty) {
             _loadMainImageFromUrl(doc['image']);
           }
@@ -61,7 +123,9 @@ class _ProductState extends State<Product> {
           }
         });
       }
-    } catch (e) {  developer.log('Error fetching product: $e', name: 'FirebaseFetch');}
+    } catch (e) {
+      developer.log('Error fetching product: $e', name: 'FirebaseFetch');
+    }
   }
 
   Future<void> _loadMainImageFromUrl(String url) async {
@@ -73,7 +137,9 @@ class _ProductState extends State<Product> {
       setState(() {
         _mainImage = file;
       });
-    } catch (e) {developer.log('Error downloading image: $e', name: 'MyImageDownloader'); }
+    } catch (e) {
+      developer.log('Error downloading image: $e', name: 'MyImageDownloader');
+    }
   }
 
   Future<void> _loadAdditionalImagesFromUrl(List<dynamic> urls) async {
@@ -89,11 +155,11 @@ class _ProductState extends State<Product> {
         });
       }
     } catch (e) {
-       developer.log("Error loading additional images from url: $e", name: "ImageLoading");
+      developer.log("Error loading additional images from url: $e",
+          name: "ImageLoading");
     }
   }
 
-  // Fetch categories from Firebase Firestore
   Future<void> _getCategories() async {
     try {
       var snapshot =
@@ -106,7 +172,6 @@ class _ProductState extends State<Product> {
     }
   }
 
-  // Pick main image
   Future<void> _pickMainImage() async {
     final pickedFile =
         await ImagePicker().pickImage(source: ImageSource.gallery);
@@ -117,7 +182,6 @@ class _ProductState extends State<Product> {
     }
   }
 
-  // Pick additional images
   Future<void> _pickAdditionalImages() async {
     final pickedFiles = await ImagePicker().pickMultiImage();
     if (pickedFiles.isNotEmpty) {
@@ -128,7 +192,6 @@ class _ProductState extends State<Product> {
     }
   }
 
-  // Upload image to Cloudinary
   Future<String?> _uploadImage(File image) async {
     try {
       final request = http.MultipartRequest(
@@ -142,7 +205,7 @@ class _ProductState extends State<Product> {
       if (response.statusCode == 200) {
         final responseData = await http.Response.fromStream(response);
         final data = json.decode(responseData.body);
-        return data['secure_url']; // Return the URL of the uploaded image
+        return data['secure_url'];
       } else {
         throw Exception('Failed to upload image');
       }
@@ -151,8 +214,7 @@ class _ProductState extends State<Product> {
     }
   }
 
-  // Add product to Firestore
- Future<void> _addProduct() async {
+  Future<void> _addProduct() async {
     if (_formKey.currentState?.validate() ?? false) {
       setState(() {
         _isLoading = true;
@@ -196,6 +258,7 @@ class _ProductState extends State<Product> {
           'productname': _productNameController.text,
           'type': _weightType,
           'moreImages': additionalImageUrls,
+          'offerType': _offerType ?? "Normal",
         };
 
         if (widget.productId != null) {
@@ -223,6 +286,8 @@ class _ProductState extends State<Product> {
           _additionalImages.clear();
           _category = null;
           _weightType = null;
+          // After adding/updating, reset selected offer type to "Normal"
+          _offerType = "Normal";
           _isLoading = false;
           _uploadProgress = 0.0;
         });
@@ -243,13 +308,14 @@ class _ProductState extends State<Product> {
     _descriptionController.dispose();
     _productNameController.dispose();
     _priceController.dispose();
+    _newOfferTypeController.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     double screenWidth = MediaQuery.of(context).size.width;
-    bool isWeb = screenWidth > 600; // Web if width > 600px
+    bool isWeb = screenWidth > 600;
 
     return SafeArea(
       child: Scaffold(
@@ -262,8 +328,8 @@ class _ProductState extends State<Product> {
               Positioned.fill(
                 child: Container(
                   color: Colors.black.withOpacity(0.5),
-                  child: Center(
-                    child: CircularProgressIndicator(), // Only circular indicator
+                  child: const Center(
+                    child: CircularProgressIndicator(),
                   ),
                 ),
               ),
@@ -274,11 +340,9 @@ class _ProductState extends State<Product> {
     );
   }
 
-  // Web Dashboard Layout
   Widget _buildWebDashboard(BuildContext context) {
     return Row(
       children: [
-        // Sidebar
         Container(
           width: 250,
           color: const Color.fromARGB(255, 239, 129, 157),
@@ -298,8 +362,6 @@ class _ProductState extends State<Product> {
             ],
           ),
         ),
-
-        // Main Content with Shadow
         Expanded(
           child: Center(
             child: Container(
@@ -321,21 +383,20 @@ class _ProductState extends State<Product> {
                 key: _formKey,
                 child: Row(
                   children: [
-                    // Product Form (Left Side)
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Row(
                             children: [
-                              const Spacer(), // Pushes button to the right
+                              const Spacer(),
                               ElevatedButton(
                                 onPressed: () {
                                   Navigator.push(
                                     context,
                                     MaterialPageRoute(
                                         builder: (context) =>
-                                            ProductView()), // Correct way
+                                            const ProductView()),
                                   );
                                 },
                                 child: const Text("View Product"),
@@ -346,10 +407,53 @@ class _ProductState extends State<Product> {
                           const Text("Add Product",
                               style: TextStyle(fontSize: 18)),
                           const SizedBox(height: 10),
-
-                          // Dropdown for Categories
-                          DropdownButton<String>(
-                            hint: const Text("Select Category"),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: TextFormField(
+                                  controller: _newOfferTypeController,
+                                  decoration: const InputDecoration(
+                                    border: OutlineInputBorder(),
+                                    labelText: "Add New Offer Type",
+                                    hintText: "e.g., Seasonal, Featured",
+                                  ),
+                                  onFieldSubmitted: (value) {
+                                    _addOfferTypeAndSave();
+                                  },
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              ElevatedButton(
+                                onPressed: _addOfferTypeAndSave,
+                                child: const Text("Add"),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 10),
+                          const Text("Offer Type:",
+                              style: TextStyle(fontSize: 16)),
+                          Row(
+                            children: _offerTypes.map((type) {
+                              return Expanded(
+                                child: RadioListTile<String>(
+                                  title: Text(type),
+                                  value: type,
+                                  groupValue: _offerType,
+                                  onChanged: (String? value) {
+                                    setState(() {
+                                      _offerType = value;
+                                    });
+                                  },
+                                ),
+                              );
+                            }).toList(),
+                          ),
+                          const SizedBox(height: 10),
+                          DropdownButtonFormField<String>(
+                            decoration: const InputDecoration(
+                              border: OutlineInputBorder(),
+                              labelText: "Select Category",
+                            ),
                             value: _category,
                             onChanged: (value) {
                               setState(() {
@@ -363,13 +467,17 @@ class _ProductState extends State<Product> {
                                 child: Text(value),
                               );
                             }).toList(),
+                            validator: (value) {
+                              if (value == null) {
+                                return 'Please select a category';
+                              }
+                              return null;
+                            },
                           ),
                           const SizedBox(height: 10),
-
-                          // Product Name
                           TextFormField(
                             controller: _productNameController,
-                            decoration: InputDecoration(
+                            decoration: const InputDecoration(
                               border: OutlineInputBorder(),
                               labelText: "Product Name",
                             ),
@@ -381,11 +489,9 @@ class _ProductState extends State<Product> {
                             },
                           ),
                           const SizedBox(height: 10),
-
-                          // Price Field
                           TextFormField(
                             controller: _priceController,
-                            decoration: InputDecoration(
+                            decoration: const InputDecoration(
                               border: OutlineInputBorder(),
                               labelText: "Price",
                             ),
@@ -398,10 +504,11 @@ class _ProductState extends State<Product> {
                             },
                           ),
                           const SizedBox(height: 10),
-
-                          // Weight Type Dropdown
-                          DropdownButton<String>(
-                            hint: const Text("Select Weight Type"),
+                          DropdownButtonFormField<String>(
+                            decoration: const InputDecoration(
+                              border: OutlineInputBorder(),
+                              labelText: "Select Weight Type",
+                            ),
                             value: _weightType,
                             onChanged: (value) {
                               setState(() {
@@ -415,30 +522,29 @@ class _ProductState extends State<Product> {
                                 child: Text(value),
                               );
                             }).toList(),
+                            validator: (value) {
+                              if (value == null) {
+                                return 'Please select a weight type';
+                              }
+                              return null;
+                            },
                           ),
-
                           const SizedBox(height: 10),
-
-                          // Main Image (Pick Image)
                           ElevatedButton.icon(
                             onPressed: _pickMainImage,
                             icon: const Icon(Icons.image),
                             label: const Text("Pick Main Image"),
                           ),
                           const SizedBox(height: 10),
-
-                          // Additional Images (Pick Images)
                           ElevatedButton.icon(
                             onPressed: _pickAdditionalImages,
                             icon: const Icon(Icons.image),
                             label: const Text("Pick Additional Images"),
                           ),
                           const SizedBox(height: 10),
-
-                          // Product Description
                           TextFormField(
                             controller: _descriptionController,
-                            decoration: InputDecoration(
+                            decoration: const InputDecoration(
                               border: OutlineInputBorder(),
                               labelText: "Product Description",
                             ),
@@ -451,19 +557,17 @@ class _ProductState extends State<Product> {
                             },
                           ),
                           const SizedBox(height: 10),
-
-                          // Add Product Button
                           ElevatedButton(
                             onPressed: _addProduct,
-                            child: const Text("Add Product"),
+                            child: Text(widget.productId != null
+                                ? "Update Product"
+                                : "Add Product"),
                           ),
+                          
                         ],
                       ),
                     ),
-
                     const SizedBox(width: 20),
-
-                    // Image Preview (Right Side)
                     Column(
                       children: [
                         const SizedBox(height: 30),
@@ -489,13 +593,15 @@ class _ProductState extends State<Product> {
                                   );
                                 }).toList(),
                               )
-                            : Container(
-                                width: 150,
-                                height: 120,
-                                color: Colors.grey[300],
-                                child: const Center(
-                                    child:
-                                        Text("No Additional Images Selected"))),
+                            : Padding(
+                              padding: const EdgeInsets.all(8.0),
+                              child: Container(
+                                  width: 150,
+                                  height: 120,
+                                  color: Colors.grey[300],
+                                  child: const Center(
+                                      child: Text("No Additional Images Selected"))),
+                            ),
                       ],
                     ),
                   ],
@@ -508,7 +614,6 @@ class _ProductState extends State<Product> {
     );
   }
 
-  // Mobile View (Form Only, Image Preview Below)
   Widget _buildMobileView() {
     return Center(
       child: Container(
@@ -518,9 +623,9 @@ class _ProductState extends State<Product> {
           color: Colors.white,
           boxShadow: [
             BoxShadow(
-            color: Colors.grey.withAlpha((255 * 0.5).round()),
-blurRadius: 10,
-spreadRadius: 2,
+              color: Colors.grey.withAlpha((255 * 0.5).round()),
+              blurRadius: 10,
+              spreadRadius: 2,
               offset: const Offset(3, 3),
             ),
           ],
@@ -537,16 +642,23 @@ spreadRadius: 2,
                     "Product",
                     style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
                   ),
-                  const Spacer(), // Pushes button to the right
+                  const Spacer(),
                   ElevatedButton(
                     onPressed: () {
                       Navigator.push(
                         context,
                         MaterialPageRoute(
-                            builder: (context) =>
-                                ProductView()), // Correct navigation
+                            builder: (context) => const ProductView()),
                       );
                     },
+                     style: ElevatedButton.styleFrom(
+                    backgroundColor: Theme.of(context).primaryColor, // Button background color
+                    foregroundColor: const Color.fromARGB(255, 255, 255, 255), // Button text color
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10), // Rounded corners
+                    ),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  ),
                     child: const Text("View Product"),
                   ),
                 ],
@@ -554,10 +666,50 @@ spreadRadius: 2,
               const SizedBox(height: 10),
               const Text("Add Product", style: TextStyle(fontSize: 18)),
               const SizedBox(height: 10),
-
-              // Dropdown for Categories
-              DropdownButton<String>(
-                hint: const Text("Select Category"),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextFormField(
+                      controller: _newOfferTypeController,
+                      decoration: const InputDecoration(
+                        border: OutlineInputBorder(),
+                        labelText: "Add New Offer Type",
+                        hintText: "e.g., Seasonal, Featured",
+                      ),
+                      onFieldSubmitted: (value) {
+                        _addOfferTypeAndSave();
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  ElevatedButton(
+                    onPressed: _addOfferTypeAndSave,
+                    child: const Text("Add"),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              const Text("Offer Type:", style: TextStyle(fontSize: 16)),
+              Column(
+                children: _offerTypes.map((type) {
+                  return RadioListTile<String>(
+                    title: Text(type),
+                    value: type,
+                    groupValue: _offerType,
+                    onChanged: (String? value) {
+                      setState(() {
+                        _offerType = value;
+                      });
+                    },
+                  );
+                }).toList(),
+              ),
+              const SizedBox(height: 10),
+              DropdownButtonFormField<String>(
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
+                  labelText: "Select Category",
+                ),
                 value: _category,
                 onChanged: (value) {
                   setState(() {
@@ -570,13 +722,17 @@ spreadRadius: 2,
                     child: Text(value),
                   );
                 }).toList(),
+                validator: (value) {
+                  if (value == null) {
+                    return 'Please select a category';
+                  }
+                  return null;
+                },
               ),
               const SizedBox(height: 10),
-
-              // Product Name
               TextFormField(
                 controller: _productNameController,
-                decoration: InputDecoration(
+                decoration: const InputDecoration(
                   border: OutlineInputBorder(),
                   labelText: "Product Name",
                 ),
@@ -588,11 +744,9 @@ spreadRadius: 2,
                 },
               ),
               const SizedBox(height: 10),
-
-              // Price Field
               TextFormField(
                 controller: _priceController,
-                decoration: InputDecoration(
+                decoration: const InputDecoration(
                   border: OutlineInputBorder(),
                   labelText: "Price",
                 ),
@@ -605,10 +759,11 @@ spreadRadius: 2,
                 },
               ),
               const SizedBox(height: 10),
-
-              // Weight Type Dropdown
-              DropdownButton<String>(
-                hint: const Text("Select Weight Type"),
+              DropdownButtonFormField<String>(
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
+                  labelText: "Select Weight Type",
+                ),
                 value: _weightType,
                 onChanged: (value) {
                   setState(() {
@@ -622,30 +777,29 @@ spreadRadius: 2,
                     child: Text(value),
                   );
                 }).toList(),
+                validator: (value) {
+                  if (value == null) {
+                    return 'Please select a weight type';
+                  }
+                  return null;
+                },
               ),
-
               const SizedBox(height: 10),
-
-              // Main Image (Pick Image)
               ElevatedButton.icon(
                 onPressed: _pickMainImage,
                 icon: const Icon(Icons.image),
                 label: const Text("Pick Main Image"),
               ),
               const SizedBox(height: 10),
-
-              // Additional Images (Pick Images)
               ElevatedButton.icon(
                 onPressed: _pickAdditionalImages,
                 icon: const Icon(Icons.image),
                 label: const Text("Pick Additional Images"),
               ),
               const SizedBox(height: 10),
-
-              // Product Description
               TextFormField(
                 controller: _descriptionController,
-                decoration: InputDecoration(
+                decoration: const InputDecoration(
                   border: OutlineInputBorder(),
                   labelText: "Product Description",
                 ),
@@ -657,16 +811,30 @@ spreadRadius: 2,
                   return null;
                 },
               ),
-              const SizedBox(height: 10),
-
-              // Add Product Button
+              const SizedBox(height: 10,),
+              
               ElevatedButton(
+                
+                 style: ElevatedButton.styleFrom(
+                    backgroundColor: Theme.of(context).primaryColor, // Button background color
+                    foregroundColor: const Color.fromARGB(255, 255, 255, 255), // Button text color
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10), // Rounded corners
+                    ),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  ),
                 onPressed: _addProduct,
-                child: const Text("Add Product"),
+                
+                 child: SizedBox(
+    height: 40, // Fixed height, you can make this dynamic if 'height' is a variable
+    width: double.infinity, // This makes the button take full available width
+    child: Center( // Center the text within the SizedBox
+      child: Text(
+        widget.productId != null ? "Update Product" : "Add Product",
+      ),
+    ),)
               ),
               const SizedBox(height: 20),
-
-              // Image Preview (Below Form)
               Center(
                 child: _mainImage != null
                     ? Image.file(_mainImage!,
@@ -694,7 +862,10 @@ spreadRadius: 2,
                       height: 120,
                       color: Colors.grey[300],
                       child: const Center(
-                          child: Text("No Additional Images Selected"))),
+                          child: Padding(
+                            padding: EdgeInsets.all(8.0),
+                            child: Text("No Additional Images Selected"),
+                          ))),
             ],
           ),
         ),
@@ -702,7 +873,6 @@ spreadRadius: 2,
     );
   }
 
-  // Sidebar Item
   Widget _buildSidebarItem(BuildContext context, String title) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 10),
@@ -718,12 +888,11 @@ spreadRadius: 2,
     );
   }
 
-  // Drawer for Mobile
   Widget _buildDrawer(BuildContext context) {
     return Drawer(
       child: ListView(
         children: [
-          DrawerHeader(child: Center(child: const Text('Menu'))),
+          const DrawerHeader(child: Center(child: Text('Menu'))),
           ListTile(title: const Text("Home")),
           ListTile(title: const Text("Order")),
           ListTile(title: const Text("Categories")),
@@ -733,8 +902,6 @@ spreadRadius: 2,
     );
   }
 }
-
-
 /*import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
